@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   Bar,
   BarChart,
@@ -8,6 +8,7 @@ import {
   XAxis,
   YAxis
 } from 'recharts';
+import { fetchDealer } from '../api/client';
 import { KpiCard } from '../components/ui/KpiCard';
 import {
   dealerExecutionRows,
@@ -15,26 +16,146 @@ import {
   dealerParticipationTrend,
   lowParticipationWarnings
 } from '../data/mockData';
+import { QuarterKey } from '../types';
 
-export function DealerCollabPage() {
+interface DealerCollabPageProps {
+  quarter: QuarterKey;
+  meetingMode: boolean;
+}
+
+export function DealerCollabPage({ quarter, meetingMode }: DealerCollabPageProps) {
   const [taskMessage, setTaskMessage] = useState('');
+  const [apiConnected, setApiConnected] = useState(false);
+  const [apiData, setApiData] = useState<{
+    kpis: typeof dealerKpis;
+    executionRows: typeof dealerExecutionRows;
+    participationTrend: typeof dealerParticipationTrend;
+    warnings: typeof lowParticipationWarnings;
+  } | null>(null);
+
+  useEffect(() => {
+    if (meetingMode) {
+      setTaskMessage('晨会模式：已自动识别低参与区域，建议优先督办华东与西北。');
+    }
+  }, [meetingMode]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchDealer(quarter)
+      .then((data) => {
+        if (!cancelled) {
+          setApiData({
+            kpis: data.kpis,
+            executionRows: data.executionRows,
+            participationTrend: data.participationTrend,
+            warnings: data.warnings
+          });
+          setApiConnected(true);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setApiConnected(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [quarter]);
+
+  const adjustedKpis = useMemo(() => {
+    if (apiData) {
+      return apiData.kpis;
+    }
+    if (quarter === '2026Q2') {
+      return dealerKpis;
+    }
+    return dealerKpis.map((item) => {
+      if (item.id === 'd1') return { ...item, value: '1,248', trend: '季度净增 21 家' };
+      if (item.id === 'd2') return { ...item, value: '792', trend: '参与覆盖 63%' };
+      if (item.id === 'd3') return { ...item, value: '69%', trend: '较上月 +1%' };
+      if (item.id === 'd4') return { ...item, value: '4', trend: '较上月 +1' };
+      return item;
+    });
+  }, [apiData, quarter]);
+
+  const executionRows = useMemo(() => {
+    if (apiData) {
+      return apiData.executionRows;
+    }
+    if (quarter === '2026Q2') {
+      return dealerExecutionRows;
+    }
+    return dealerExecutionRows.map((row) => ({
+      ...row,
+      executed: Math.max(60, row.executed - 12),
+      materialRate: Math.max(55, row.materialRate - 5),
+      feedbackRate: Math.max(48, row.feedbackRate - 6),
+      score: Math.max(3.1, Number((row.score - 0.2).toFixed(1)))
+    }));
+  }, [apiData, quarter]);
+
+  const participationTrend = useMemo(() => {
+    if (apiData) {
+      return apiData.participationTrend;
+    }
+    if (quarter === '2026Q2') {
+      return dealerParticipationTrend;
+    }
+    return dealerParticipationTrend.map((row) => ({
+      ...row,
+      rate: Math.max(45, row.rate - 6)
+    }));
+  }, [apiData, quarter]);
+
+  const warnings = useMemo(() => {
+    if (apiData) {
+      return apiData.warnings;
+    }
+    if (quarter === '2026Q2') {
+      return lowParticipationWarnings;
+    }
+    return lowParticipationWarnings.map((row) => ({
+      ...row,
+      rate: Math.max(50, row.rate - 4)
+    }));
+  }, [apiData, quarter]);
 
   const handleSuggestTask = (region: string) => {
     setTaskMessage(`已为 ${region} 区域生成督办任务建议，可在异常督办中心继续跟踪。`);
     window.setTimeout(() => setTaskMessage(''), 2600);
   };
 
+  const handleCreateBatchTasks = () => {
+    setTaskMessage('已批量生成华东、西北、华南区域督办任务草案。');
+    window.setTimeout(() => setTaskMessage(''), 2600);
+  };
+
   return (
     <div className="space-y-6">
       <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-card">
-        <h3 className="font-serif text-xl text-mlan">经销商协同</h3>
-        <p className="mt-1 text-sm text-slate-600">
-          实时关注区域经销商参与情况、活动执行能力与物料反馈效率。
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="font-serif text-xl text-mlan">经销商协同</h3>
+            <p className="mt-1 text-sm text-slate-600">
+              实时关注区域经销商参与情况、活动执行能力与物料反馈效率。
+            </p>
+          </div>
+          <button
+            onClick={handleCreateBatchTasks}
+            className="rounded-xl border border-dianqing/30 bg-dianqing/5 px-3 py-2 text-xs font-medium text-dianqing transition hover:bg-dianqing/10"
+          >
+            一键生成区域督办
+          </button>
+        </div>
+        <p className="mt-2 text-xs text-slate-500">当前周期：{quarter === '2026Q2' ? '2026 年 Q2' : '2026 年 Q1'}</p>
+        <p className={`mt-1 text-xs ${apiConnected ? 'text-emerald-600' : 'text-amber-600'}`}>
+          {apiConnected ? '经销商数据来自后端接口' : '经销商数据当前使用前端兜底'}
         </p>
       </section>
 
       <section className="grid grid-cols-1 gap-4 xl:grid-cols-4">
-        {dealerKpis.map((item) => (
+        {adjustedKpis.map((item) => (
           <KpiCard key={item.id} item={item} />
         ))}
       </section>
@@ -57,7 +178,7 @@ export function DealerCollabPage() {
                 </tr>
               </thead>
               <tbody>
-                {dealerExecutionRows.map((row) => (
+                {executionRows.map((row) => (
                   <tr key={row.region} className="border-t border-slate-100 transition hover:bg-mist/35">
                     <td className="px-4 py-3 font-medium text-slate-800">{row.region}</td>
                     <td className="px-4 py-3">{row.enrolled}</td>
@@ -76,7 +197,7 @@ export function DealerCollabPage() {
           <h4 className="mb-3 font-serif text-lg text-mlan">区域参与率</h4>
           <div className="h-72">
             <ResponsiveContainer>
-              <BarChart data={dealerParticipationTrend} layout="vertical" margin={{ top: 8, right: 20, left: 10, bottom: 8 }}>
+              <BarChart data={participationTrend} layout="vertical" margin={{ top: 8, right: 20, left: 10, bottom: 8 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#D6E1E8" />
                 <XAxis type="number" tickFormatter={(value) => `${value}%`} domain={[0, 100]} />
                 <YAxis type="category" dataKey="region" width={46} />
@@ -92,8 +213,13 @@ export function DealerCollabPage() {
       </section>
 
       <section className="grid grid-cols-1 gap-4 xl:grid-cols-3">
-        {lowParticipationWarnings.map((item) => (
-          <article key={item.region} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-card">
+        {warnings.map((item, index) => (
+          <article
+            key={item.region}
+            className={`rounded-2xl border bg-white p-4 shadow-card ${
+              meetingMode && index < 2 ? 'border-sealred/30 ring-1 ring-sealred/15' : 'border-slate-200'
+            }`}
+          >
             <div className="mb-2 flex items-center justify-between">
               <h4 className="font-medium text-slate-800">{item.region}</h4>
               <span className="rounded-full bg-sealred/10 px-2.5 py-1 text-xs text-sealred">{item.rate}%</span>

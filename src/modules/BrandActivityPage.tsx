@@ -1,9 +1,15 @@
-import { FormEvent, ReactNode, useMemo, useState } from 'react';
+import { FormEvent, ReactNode, useEffect, useMemo, useState } from 'react';
+import { createActivity, fetchActivities } from '../api/client';
 import { brandActivityRows, brandActivitySummary, brandFilterOptions } from '../data/mockData';
-import { BrandActivityItem } from '../types';
+import { BrandActivityItem, QuarterKey } from '../types';
 import { Modal } from '../components/ui/Modal';
 import { ProgressBar } from '../components/ui/ProgressBar';
 import { StatusBadge } from '../components/ui/StatusBadge';
+
+interface BrandActivityPageProps {
+  quarter: QuarterKey;
+  meetingMode: boolean;
+}
 
 type FilterState = {
   brand: string;
@@ -31,21 +37,71 @@ const initialForm = {
   description: ''
 };
 
-export function BrandActivityPage() {
+export function BrandActivityPage({ quarter, meetingMode }: BrandActivityPageProps) {
   const [rows, setRows] = useState<BrandActivityItem[]>(brandActivityRows);
   const [filters, setFilters] = useState<FilterState>(initialFilter);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [form, setForm] = useState(initialForm);
+  const [templateMsg, setTemplateMsg] = useState('');
+  const [apiConnected, setApiConnected] = useState(false);
+
+  useEffect(() => {
+    if (meetingMode) {
+      setFilters({ ...initialFilter, status: '风险预警' });
+    }
+  }, [meetingMode]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchActivities()
+      .then((data) => {
+        if (!cancelled && Array.isArray(data)) {
+          setRows(data);
+          setApiConnected(true);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setApiConnected(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const quarterRows = useMemo(() => {
+    if (quarter === '2026Q2') {
+      return rows;
+    }
+    return rows.map((row) => ({
+      ...row,
+      progress: Math.max(0, row.progress - 8),
+      budget: Math.max(10, row.budget - 12)
+    }));
+  }, [quarter, rows]);
 
   const filteredRows = useMemo(() => {
-    return rows.filter((item) => {
+    return quarterRows.filter((item) => {
       const matchBrand = filters.brand === '全部' || item.brand === filters.brand;
       const matchType = filters.type === '全部' || item.type === filters.type;
       const matchStatus = filters.status === '全部' || item.status === filters.status;
       const matchRegion = filters.region === '全部' || item.region === filters.region;
       return matchBrand && matchType && matchStatus && matchRegion;
     });
-  }, [filters, rows]);
+  }, [filters, quarterRows]);
+
+  const summary = useMemo(() => {
+    if (quarter === '2026Q2') {
+      return brandActivitySummary;
+    }
+    return {
+      ongoing: 39,
+      completed: 55,
+      warning: 13,
+      newThisMonth: 8
+    };
+  }, [quarter]);
 
   const handleSubmit = (event: FormEvent) => {
     event.preventDefault();
@@ -66,9 +122,46 @@ export function BrandActivityPage() {
       description: form.description
     };
 
-    setRows((prev) => [newItem, ...prev]);
+    createActivity(newItem)
+      .then((saved) => {
+        setRows((prev) => [saved, ...prev]);
+        setApiConnected(true);
+      })
+      .catch(() => {
+        setRows((prev) => [newItem, ...prev]);
+        setApiConnected(false);
+      });
     setForm(initialForm);
     setIsModalOpen(false);
+  };
+
+  const handleCreateTemplate = () => {
+    const template: BrandActivityItem = {
+      id: `tpl-${Date.now()}`,
+      name: '汾酒清香品鉴会（模板）',
+      brand: '汾酒',
+      type: '经销商品鉴会',
+      region: '华东',
+      owner: '总部模板',
+      budget: 130,
+      progress: 15,
+      status: '进行中',
+      description: '用于现场快速演示的标准化活动模板。'
+    };
+    createActivity(template)
+      .then((saved) => {
+        setRows((prev) => [saved, ...prev]);
+        setApiConnected(true);
+        setTemplateMsg('已自动创建模板活动，可继续编辑并提交执行。');
+      })
+      .catch(() => {
+        setRows((prev) => [template, ...prev]);
+        setApiConnected(false);
+        setTemplateMsg('后端未连接，已使用本地演示数据创建模板活动。');
+      })
+      .finally(() => {
+        window.setTimeout(() => setTemplateMsg(''), 2600);
+      });
   };
 
   return (
@@ -81,14 +174,26 @@ export function BrandActivityPage() {
               统一管理汾酒、竹叶青、杏花村品牌活动，从申报、执行到复盘全过程协同。
             </p>
           </div>
-          <button
-            onClick={() => setIsModalOpen(true)}
-            className="rounded-xl bg-dianqing px-4 py-2 text-sm font-medium text-white transition hover:bg-qinghua"
-          >
-            新建活动
-          </button>
+          <div className="flex gap-2">
+            <button
+              onClick={handleCreateTemplate}
+              className="rounded-xl border border-dianqing/30 bg-dianqing/5 px-3 py-2 text-xs font-medium text-dianqing transition hover:bg-dianqing/10"
+            >
+              一键新建模板活动
+            </button>
+            <button
+              onClick={() => setIsModalOpen(true)}
+              className="rounded-xl bg-dianqing px-4 py-2 text-sm font-medium text-white transition hover:bg-qinghua"
+            >
+              新建活动
+            </button>
+          </div>
         </div>
 
+        <div className="mb-3 text-xs text-slate-500">当前周期：{quarter === '2026Q2' ? '2026 年 Q2' : '2026 年 Q1'}</div>
+        <div className={`mb-3 text-xs ${apiConnected ? 'text-emerald-600' : 'text-amber-600'}`}>
+          {apiConnected ? '活动数据来自后端接口' : '活动数据当前使用前端兜底'}
+        </div>
         <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
           {Object.entries(brandFilterOptions).map(([key, options]) => (
             <label key={key} className="text-sm">
@@ -109,13 +214,14 @@ export function BrandActivityPage() {
             </label>
           ))}
         </div>
+        {templateMsg && <p className="mt-3 rounded-lg bg-emerald-50 px-3 py-2 text-xs text-emerald-700">{templateMsg}</p>}
       </section>
 
       <section className="grid grid-cols-2 gap-4 xl:grid-cols-4">
-        <SummaryCard title="进行中活动" value={brandActivitySummary.ongoing} color="text-dianqing" />
-        <SummaryCard title="已完成活动" value={brandActivitySummary.completed} color="text-emerald-600" />
-        <SummaryCard title="风险预警活动" value={brandActivitySummary.warning} color="text-sealred" />
-        <SummaryCard title="本月新增活动" value={brandActivitySummary.newThisMonth} color="text-mutedgold" />
+        <SummaryCard title="进行中活动" value={summary.ongoing} color="text-dianqing" />
+        <SummaryCard title="已完成活动" value={summary.completed} color="text-emerald-600" />
+        <SummaryCard title="风险预警活动" value={summary.warning} color="text-sealred" />
+        <SummaryCard title="本月新增活动" value={summary.newThisMonth} color="text-mutedgold" />
       </section>
 
       <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-card">
@@ -135,30 +241,36 @@ export function BrandActivityPage() {
               </tr>
             </thead>
             <tbody>
-              {filteredRows.map((row) => (
-                <tr key={row.id} className="border-t border-slate-100 transition hover:bg-mist/35">
-                  <td className="px-4 py-3 font-medium text-slate-800">{row.name}</td>
-                  <td className="px-4 py-3">{row.brand}</td>
-                  <td className="px-4 py-3">{row.type}</td>
-                  <td className="px-4 py-3">{row.region}</td>
-                  <td className="px-4 py-3">{row.owner}</td>
-                  <td className="px-4 py-3">{row.budget} 万</td>
-                  <td className="w-52 px-4 py-3">
-                    <ProgressBar
-                      value={row.progress}
-                      color={row.status === '风险预警' ? 'red' : row.status === '已完成' ? 'green' : 'blue'}
-                    />
-                  </td>
-                  <td className="px-4 py-3">
-                    <StatusBadge value={row.status} />
-                  </td>
-                  <td className="px-4 py-3">
-                    <button className="rounded-lg border border-dianqing/25 px-2.5 py-1 text-xs text-dianqing transition hover:bg-dianqing/10">
-                      查看
-                    </button>
-                  </td>
-                </tr>
-              ))}
+              {filteredRows.map((row) => {
+                const spotlight = meetingMode && row.status === '风险预警';
+                return (
+                  <tr
+                    key={row.id}
+                    className={`border-t border-slate-100 transition hover:bg-mist/35 ${spotlight ? 'bg-sealred/5' : ''}`}
+                  >
+                    <td className="px-4 py-3 font-medium text-slate-800">{row.name}</td>
+                    <td className="px-4 py-3">{row.brand}</td>
+                    <td className="px-4 py-3">{row.type}</td>
+                    <td className="px-4 py-3">{row.region}</td>
+                    <td className="px-4 py-3">{row.owner}</td>
+                    <td className="px-4 py-3">{row.budget} 万</td>
+                    <td className="w-52 px-4 py-3">
+                      <ProgressBar
+                        value={row.progress}
+                        color={row.status === '风险预警' ? 'red' : row.status === '已完成' ? 'green' : 'blue'}
+                      />
+                    </td>
+                    <td className="px-4 py-3">
+                      <StatusBadge value={row.status} />
+                    </td>
+                    <td className="px-4 py-3">
+                      <button className="rounded-lg border border-dianqing/25 px-2.5 py-1 text-xs text-dianqing transition hover:bg-dianqing/10">
+                        查看
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>

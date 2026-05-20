@@ -4,6 +4,7 @@ export type ModuleKey =
   | 'culturalTourism'
   | 'dealerCollab'
   | 'supervision';
+export type QuarterKey = '2026Q2' | '2026Q1';
 
 export type PriorityLevel = '高' | '中' | '低';
 export type ActivityStatus = '未开始' | '进行中' | '已完成' | '风险预警';

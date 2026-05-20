@@ -1,37 +1,138 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from 'recharts';
+import { fetchAiSuggestion, fetchSupervisions, patchSupervisionStatus } from '../api/client';
 import { Drawer } from '../components/ui/Drawer';
 import { StatusBadge } from '../components/ui/StatusBadge';
 import { aiSuggestionText, supervisionItems, supervisionStatusData } from '../data/mockData';
-import { SupervisionItem } from '../types';
+import { QuarterKey, SupervisionItem } from '../types';
 
 const colors = ['#C5A46D', '#1E5A8A', '#5E8FB3', '#A63A3A'];
 
-export function SupervisionPage() {
+interface SupervisionPageProps {
+  quarter: QuarterKey;
+  meetingMode: boolean;
+}
+
+export function SupervisionPage({ quarter, meetingMode }: SupervisionPageProps) {
   const [selected, setSelected] = useState<SupervisionItem | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
   const [aiSuggestion, setAiSuggestion] = useState('');
+  const [baseRows, setBaseRows] = useState<SupervisionItem[]>(supervisionItems);
+  const [apiConnected, setApiConnected] = useState(false);
+
+  useEffect(() => {
+    if (meetingMode) {
+      setSelected(baseRows[0] ?? supervisionItems[0]);
+    }
+  }, [baseRows, meetingMode]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchSupervisions()
+      .then((data) => {
+        if (!cancelled && Array.isArray(data)) {
+          setBaseRows(data);
+          setApiConnected(true);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setApiConnected(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const rows = useMemo(() => {
+    if (quarter === '2026Q2') {
+      return baseRows;
+    }
+    return baseRows.map((item) => {
+      if (item.id === 's1') return { ...item, status: '待处理' as const };
+      return item;
+    });
+  }, [baseRows, quarter]);
+
+  const statusData = useMemo(() => {
+    if (quarter === '2026Q2') {
+      return supervisionStatusData;
+    }
+    return [
+      { name: '待处理', value: 7 },
+      { name: '处理中', value: 5 },
+      { name: '已完成', value: 8 },
+      { name: '已逾期', value: 3 }
+    ];
+  }, [quarter]);
 
   const overdueCount = useMemo(
-    () => supervisionItems.filter((item) => item.status === '已逾期').length,
-    []
+    () => rows.filter((item) => item.status === '已逾期').length,
+    [rows]
   );
 
   const handleGenerateSuggestion = () => {
     setAiLoading(true);
     setAiSuggestion('');
-    window.setTimeout(() => {
-      setAiSuggestion(aiSuggestionText);
-      setAiLoading(false);
-    }, 900);
+    const issue = selected?.task;
+    fetchAiSuggestion(issue)
+      .then((data) => {
+        setAiSuggestion(data.content);
+        setApiConnected(true);
+      })
+      .catch(() => {
+        setAiSuggestion(aiSuggestionText);
+        setApiConnected(false);
+      })
+      .finally(() => setAiLoading(false));
+  };
+
+  const handleMarkProcessing = (item: SupervisionItem) => {
+    patchSupervisionStatus(item.id, '处理中')
+      .then((updated) => {
+        setBaseRows((prev) => prev.map((row) => (row.id === updated.id ? updated : row)));
+        setApiConnected(true);
+      })
+      .catch(() => {
+        setBaseRows((prev) =>
+          prev.map((row) => (row.id === item.id ? { ...row, status: '处理中' as const } : row))
+        );
+        setApiConnected(false);
+      });
+  };
+
+  const handleExportModuleChecklist = () => {
+    const content = rows
+      .map((item, index) => `${index + 1}. ${item.task} | ${item.region} | ${item.owner} | ${item.status}`)
+      .join('\n');
+    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = `督办中心清单-${quarter}.txt`;
+    link.click();
+    URL.revokeObjectURL(link.href);
   };
 
   return (
     <div className="space-y-6">
       <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-card">
-        <h3 className="font-serif text-xl text-mlan">异常督办中心</h3>
-        <p className="mt-1 text-sm text-slate-600">
-          对活动执行、渠道参与、预算使用、文旅推进等异常事项形成责任到人的闭环跟踪。
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="font-serif text-xl text-mlan">异常督办中心</h3>
+            <p className="mt-1 text-sm text-slate-600">
+              对活动执行、渠道参与、预算使用、文旅推进等异常事项形成责任到人的闭环跟踪。
+            </p>
+          </div>
+          <button
+            onClick={handleExportModuleChecklist}
+            className="rounded-xl border border-dianqing/30 bg-dianqing/5 px-3 py-2 text-xs font-medium text-dianqing transition hover:bg-dianqing/10"
+          >
+            导出本次督办清单
+          </button>
+        </div>
+        <p className={`mt-2 text-xs ${apiConnected ? 'text-emerald-600' : 'text-amber-600'}`}>
+          {apiConnected ? '督办数据来自后端接口' : '督办数据当前使用前端兜底'}
         </p>
       </section>
 
@@ -56,8 +157,13 @@ export function SupervisionPage() {
                 </tr>
               </thead>
               <tbody>
-                {supervisionItems.map((item) => (
-                  <tr key={item.id} className="border-t border-slate-100 transition hover:bg-mist/35">
+                {rows.map((item, index) => (
+                  <tr
+                    key={item.id}
+                    className={`border-t border-slate-100 transition hover:bg-mist/35 ${
+                      meetingMode && index === 0 ? 'bg-sealred/5' : ''
+                    }`}
+                  >
                     <td className="px-4 py-3 font-medium text-slate-800">{item.task}</td>
                     <td className="px-4 py-3">{item.issueType}</td>
                     <td className="px-4 py-3">{item.region}</td>
@@ -71,12 +177,22 @@ export function SupervisionPage() {
                       <StatusBadge value={item.status} />
                     </td>
                     <td className="px-4 py-3">
-                      <button
-                        onClick={() => setSelected(item)}
-                        className="rounded-lg border border-dianqing/25 px-2.5 py-1 text-xs text-dianqing transition hover:bg-dianqing/10"
-                      >
-                        查看详情
-                      </button>
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => setSelected(item)}
+                          className="rounded-lg border border-dianqing/25 px-2.5 py-1 text-xs text-dianqing transition hover:bg-dianqing/10"
+                        >
+                          查看详情
+                        </button>
+                        {item.status !== '处理中' && (
+                          <button
+                            onClick={() => handleMarkProcessing(item)}
+                            className="rounded-lg border border-emerald-300 px-2.5 py-1 text-xs text-emerald-700 transition hover:bg-emerald-50"
+                          >
+                            转处理中
+                          </button>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -91,8 +207,8 @@ export function SupervisionPage() {
             <div className="h-56">
               <ResponsiveContainer>
                 <PieChart>
-                  <Pie data={supervisionStatusData} dataKey="value" nameKey="name" innerRadius={50} outerRadius={82}>
-                    {supervisionStatusData.map((entry, idx) => (
+                  <Pie data={statusData} dataKey="value" nameKey="name" innerRadius={50} outerRadius={82}>
+                    {statusData.map((entry, idx) => (
                       <Cell key={entry.name} fill={colors[idx % colors.length]} />
                     ))}
                   </Pie>
@@ -104,7 +220,7 @@ export function SupervisionPage() {
               </ResponsiveContainer>
             </div>
             <div className="mt-1 grid grid-cols-2 gap-2 text-xs text-slate-600">
-              {supervisionStatusData.map((item, idx) => (
+              {statusData.map((item, idx) => (
                 <div key={item.name} className="flex items-center gap-2">
                   <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: colors[idx] }} />
                   <span>
